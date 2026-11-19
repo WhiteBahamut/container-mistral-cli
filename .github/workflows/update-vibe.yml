@@ -1,0 +1,43 @@
+name: Update Vibe Version
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main          # <— ensures we always operate on main
+
+      - name: Fetch latest Vibe release from PyPI
+        id: fetch
+        run: |
+          API="https://pypi.org/pypi/mistral-vibe/json"
+          LATEST=$(curl -s $API | jq -r '.info.version')
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+
+      - name: Read current version
+        id: current
+        run: |
+          CURRENT=$(grep '^VIBE_VERSION=' .image.env | cut -d '=' -f2)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+      - name: Update .image.env if needed
+        if: steps.fetch.outputs.latest != steps.current.outputs.current
+        run: |
+          sed -i "s/^VIBE_VERSION=.*/VIBE_VERSION=${{ steps.fetch.outputs.latest }}/" .image.env
+
+      - name: Commit & push to main
+        if: steps.fetch.outputs.latest != steps.current.outputs.current
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .image.env
+          git commit -m "Update VIBE_VERSION to ${{ steps.fetch.outputs.latest }}"
+          git push origin main

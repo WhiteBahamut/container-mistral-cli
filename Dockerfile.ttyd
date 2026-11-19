@@ -1,0 +1,71 @@
+# ====================================================
+# BUILD STAGE: Install dependencies and the Mistral Vibe CLI
+# ====================================================
+ARG VIBE_VERSION
+
+FROM fedora:45 AS builder
+
+# Install necessary system dependencies
+RUN dnf install -y \
+    bash \
+    curl \
+    ca-certificates \
+    openssl \
+    tar \
+    unzip \
+    && dnf clean all
+
+# Create non-root user vibe
+RUN useradd -m -s /bin/bash vibe
+RUN mkdir -p /workspace && chown vibe /workspace
+
+# Switch to vibe user
+USER vibe
+
+# Install uv (astral.sh installer puts the binary in ~/.local/bin)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/vibe/.local/bin:${PATH}"
+
+# Install Mistral Vibe CLI globally via uv.
+# --python 3.14 is required by upstream: some dependencies ship no wheels
+# for newer Pythons (e.g. 3.15). uv downloads CPython 3.14 if missing.
+# Pin to VIBE_VERSION when the build arg is set (deterministic builds,
+# mirrors the old OMP_VERSION mechanism via .image.env); otherwise latest.
+WORKDIR /workspace
+RUN if [ -n "${VIBE_VERSION}" ]; then \
+      uv tool install --python 3.14 "mistral-vibe==${VIBE_VERSION}"; \
+    else \
+      uv tool install --python 3.14 mistral-vibe; \
+    fi
+
+# ====================================================
+# RUNTIME STAGE: Minimal environment for execution
+# ====================================================
+FROM registry.fedoraproject.org/fedora-minimal:45 AS runtime
+
+# Recreate minimal environment and user
+RUN useradd -m -s /bin/bash vibe
+RUN mkdir -p /workspace && chown vibe /workspace
+RUN dnf install -y ttyd && dnf clean all
+
+{{ template for variant goes here }}
+# Runtime base stage: Minimal environment, inheriting from builder.
+
+USER vibe
+
+# Copy uv + the mistral-vibe tool (entrypoints in ~/.local/bin,
+# tool venv and managed Python under ~/.local/share/uv) from the builder.
+# All paths are absolute under /home/vibe/.local, so they stay valid here.
+COPY --from=builder /home/vibe/.local /home/vibe/.local
+# Re-establish PATH for the runtime
+ENV PATH="/home/vibe/.local/bin:${PATH}"
+# Vibe home (config, sessions, .env with MISTRAL_API_KEY) — mount a host
+# dir here at runtime, e.g. -v "$(pwd)/.vibe:/home/vibe/.vibe"
+ENV VIBE_HOME="/home/vibe/.vibe"
+
+WORKDIR /workspace
+# Expose ttyd on port 7681
+EXPOSE 7681
+
+# Launch ttyd running Mistral Vibe
+CMD ["ttyd", "-p", "7681", "-W", "bash", "-lc", "vibe"]

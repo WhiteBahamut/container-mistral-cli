@@ -1,0 +1,224 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_run:
+    workflows: ["Update Vibe Version"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ci-cd-pipeline-forceclear
+  cancel-in-progress: true
+
+env:
+  YQ_VERSION: v4.45.1
+  DEFAULT_REGISTRY: ghcr.io
+  IMAGE_REPO_PREFIX: ${{ github.repository }}
+
+jobs:
+
+  prepare:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Install mikefarah yq
+        run: |
+          set -euo pipefail
+          if ! command -v yq >/dev/null 2>&1 || [ "$(yq --version 2>/dev/null || true)" != "${YQ_VERSION}" ]; then
+            sudo apt-get update -y
+            sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version
+
+      - name: Extract variant list
+        id: set-matrix
+        run: |
+          set -euo pipefail
+
+          VARIANTS=$(yq eval -o=json -I=0 '[.variants[].name]' build_config.yaml) || {
+            echo "Failed to parse build_config.yaml" >&2
+            exit 1
+          }
+
+          if [ "$(printf '%s' "$VARIANTS" | yq eval 'length' -)" -eq 0 ]; then
+            echo "No variants found in build_config.yaml" >&2
+            exit 1
+          fi
+
+          echo "matrix=$VARIANTS" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build and push images
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      matrix:
+        variant: ${{ fromJson(needs.prepare.outputs.matrix) }}
+      max-parallel: 4
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Install mikefarah yq
+        run: |
+          set -euo pipefail
+          if ! command -v yq >/dev/null 2>&1 || [ "$(yq --version 2>/dev/null || true)" != "${YQ_VERSION}" ]; then
+            sudo apt-get update -y
+            sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+        with:
+          install: true
+
+      - name: Configure buildx cache (local)
+        uses: actions/cache@v5.0.5
+        with:
+          path: |
+            ~/.cache/docker
+            ~/.buildx-cache
+          key: buildx-cache-${{ runner.os }}-${{ github.ref_name || github.head_ref }}-${{ matrix.variant }}-${{ hashFiles('**/Dockerfile','**/build.sh','build_config.yaml') }}
+          restore-keys: |
+            buildx-cache-${{ runner.os }}-${{ github.ref_name || github.head_ref }}-${{ matrix.variant }}-
+            buildx-cache-${{ runner.os }}-${{ github.ref_name || github.head_ref }}-
+            buildx-cache-${{ runner.os }}-
+
+      - name: Run build.sh and capture image list
+        id: build
+        run: |
+          set -euo pipefail
+
+          echo "Running build.sh for variant: ${{ matrix.variant }}"
+
+          # Capture full output (stdout+stderr)
+          OUTPUT=$(./build.sh "${{ matrix.variant }}" "${{ env.DEFAULT_REGISTRY }}/whitebahamut/container-mistral-cli" 2>&1) || {
+            echo "$OUTPUT"
+            # Save output for artifact upload and fail
+            printf '%s\n' "$OUTPUT" > build-output.log || true
+            exit 1
+          }
+
+          echo "$OUTPUT"
+
+          # Extract the JSON array between the markers (first occurrence)
+          IMAGES_JSON=$(printf '%s\n' "$OUTPUT" \
+            | sed -n '/IMAGE_LIST_BEGIN/,/IMAGE_LIST_END/p' \
+            | sed '1d;$d' \
+            | sed -n '1p' || true)
+
+          IMAGES_JSON=$(printf '%s' "$IMAGES_JSON" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+          if [ -z "$IMAGES_JSON" ]; then
+            echo "No images emitted by build.sh for variant ${{ matrix.variant }}" >&2
+            printf '%s\n' "$OUTPUT" > build-output.log || true
+            exit 1
+          fi
+
+          # Validate JSON array using yq
+          JSON=$(printf '%s' "$IMAGES_JSON" | yq eval -o=json -I=0 '.' -) || {
+            echo "Image list is not valid JSON: $IMAGES_JSON" >&2
+            printf '%s\n' "$OUTPUT" > build-output.log || true
+            exit 1
+          }
+
+          echo "images=$JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4.2.0
+        with:
+          registry: ${{ env.DEFAULT_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push images to registry
+        if: github.event_name == 'push'
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DEFAULT_REGISTRY: ${{ env.DEFAULT_REGISTRY }}
+        run: |
+          set -euo pipefail
+
+          printf '%s' "${{ steps.build.outputs.images }}" \
+            | yq eval '.[]' - \
+            | while read -r IMG; do
+
+              IMG=$(printf '%s' "$IMG" | sed -E 's/^"(.*)"$/\1/')
+
+              if command -v podman; then
+                engine=podman
+              else
+                engine=docker
+              fi            
+
+              if printf '%s' "$IMG" | grep -qE '^[^/]+[.:][^/]+/'; then
+                echo "Pushing fully qualified image: $IMG"
+                $engine push "$IMG"
+              else
+                TARGET="${DEFAULT_REGISTRY}/${GITHUB_REPOSITORY}/${IMG}"
+                echo "Tagging $IMG -> $TARGET"
+                docker tag "$IMG" "$TARGET"
+                docker push "$TARGET"
+              fi
+            done
+
+      - name: Upload build output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.variant }}
+          path: |
+            build-output.log
+
+  release:
+    name: Create Release
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.3
+
+      - name: Compute short SHA
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD 2>/dev/null)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3.0.0
+        with:
+          name: ${{ steps.vars.outputs.short_sha }}
+          tag_name: ${{ steps.vars.outputs.short_sha }}
+          prerelease: false
+          generate_release_notes: true
