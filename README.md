@@ -25,6 +25,9 @@ build_config.yaml (defines variants and steps) $\rightarrow$ build.sh (orchestra
 ### Agent version pinning
 The Vibe CLI version is pinned through the `VIBE_VERSION` variable in `.image.env` (passed as a build arg). The `Update Vibe Version` workflow (`.github/workflows/update-vibe.yml`) checks PyPI daily and bumps `VIBE_VERSION` automatically. To build unpinned (latest), remove the value or pass an empty build arg.
 
+### Base image version
+The Fedora base release is configured through the `FEDORA_VERSION` variable in `.image.env` (e.g. `FEDORA_VERSION=45`). `build.sh` passes `.image.env` as build args, and both `Dockerfile` and `Dockerfile.ttyd` consume it via `ARG FEDORA_VERSION` in their `FROM` lines — the builder stage uses `fedora:${FEDORA_VERSION}` and the runtime stage uses `registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION}`. The `ARG` defaults to `45`, so building the Dockerfiles directly without build args keeps working. Change the value in `.image.env` and rebuild to switch base releases.
+
 # 🚀 Quickstart
 
 This guide provides a clear, sequential workflow for setting up and running Container Mistral CLI.
