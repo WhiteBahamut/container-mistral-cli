@@ -2,8 +2,12 @@
 # BUILD STAGE: Install dependencies and the Mistral Vibe CLI
 # ====================================================
 ARG VIBE_VERSION
+# Fedora base release for both stages (builder + runtime), overridable via
+# .image.env (passed as build arg by build.sh). Default keeps direct
+# `docker build` working without any build args.
+ARG FEDORA_VERSION=45
 
-FROM fedora:45 AS builder
+FROM fedora:${FEDORA_VERSION} AS builder
 
 # Install necessary system dependencies
 RUN dnf install -y \
@@ -41,7 +45,7 @@ RUN if [ -n "${VIBE_VERSION}" ]; then \
 # ====================================================
 # RUNTIME STAGE: Minimal environment for execution
 # ====================================================
-FROM registry.fedoraproject.org/fedora-minimal:45 AS runtime
+FROM registry.fedoraproject.org/fedora-minimal:${FEDORA_VERSION} AS runtime
 
 # Recreate minimal environment and user
 RUN useradd -m -s /bin/bash vibe

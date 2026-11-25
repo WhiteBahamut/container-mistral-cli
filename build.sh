@@ -19,7 +19,10 @@ set -euo pipefail
 #     injected verbatim (no modification).
 #   - Multi-line steps are preserved exactly as written in YAML.
 #   - The script does NOT read or substitute any base image.
-#     Dockerfile templates must include their own FROM line.
+#     Dockerfile templates must include their own FROM line. The base
+#     image version is parameterized in the templates via
+#     `ARG FEDORA_VERSION` (default 45), overridden by the
+#     FEDORA_VERSION entry in .image.env passed as a build arg below.
 #   - Variant `name` is used as the image tag (no separate tag field).
 #
 # Required files:
@@ -206,7 +209,9 @@ main() {
   tmp_std_template="/tmp/Dockerfile.template.std.$$"
   tmp_ttyd_template="/tmp/Dockerfile.template.ttyd.$$"
 
-  # Do not substitute any base image; templates must include FROM line themselves
+  # Do not substitute any base image; templates must include FROM line
+  # themselves. Base version comes from ARG FEDORA_VERSION in the templates,
+  # fed by .image.env via the build-arg-file/env-file flag in build_variant().
   cp "$DOCKERFILE" "$tmp_std_template"
   cp "$TTYD_DOCKERFILE" "$tmp_ttyd_template"
 
