@@ -236,10 +236,25 @@ jobs:
         id: vars
         run: echo "short_sha=$(git rev-parse --short HEAD 2>/dev/null)" >> "$GITHUB_OUTPUT"
 
+      - name: Build release body with Vibe CLI changelog link
+        id: body
+        run: |
+          set -euo pipefail
+          VIBE_VERSION=$(grep '^VIBE_VERSION=' .image.env | cut -d '=' -f2)
+          {
+            echo "body<<EOF"
+            echo "This image ships **Mistral Vibe CLI \`${VIBE_VERSION}\`**."
+            echo ""
+            echo "Vibe CLI changelog: https://github.com/mistralai/mistral-vibe/blob/main/CHANGELOG.md"
+            echo "Vibe CLI \`${VIBE_VERSION}\` release notes: https://github.com/mistralai/mistral-vibe/releases/tag/v${VIBE_VERSION}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3.0.0
         with:
           name: ${{ steps.vars.outputs.short_sha }}
           tag_name: ${{ steps.vars.outputs.short_sha }}
+          body: ${{ steps.body.outputs.body }}
           prerelease: false
           generate_release_notes: true
