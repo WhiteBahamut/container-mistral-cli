@@ -241,9 +241,10 @@ jobs:
         run: |
           set -euo pipefail
           VIBE_VERSION=$(grep '^VIBE_VERSION=' .image.env | cut -d '=' -f2)
+          FEDORA_VERSION=$(grep '^FEDORA_VERSION=' .image.env | cut -d '=' -f2)
           {
             echo "body<<EOF"
-            echo "This image ships **Mistral Vibe CLI \`${VIBE_VERSION}\`**."
+            echo "This image ships **Mistral Vibe CLI \`${VIBE_VERSION}\`** on **Fedora ${FEDORA_VERSION}** (base images \`fedora:${FEDORA_VERSION}\` / \`fedora-minimal:${FEDORA_VERSION}\`)."
             echo ""
             echo "Vibe CLI changelog: https://github.com/mistralai/mistral-vibe/blob/main/CHANGELOG.md"
             echo "Vibe CLI \`${VIBE_VERSION}\` release notes: https://github.com/mistralai/mistral-vibe/releases/tag/v${VIBE_VERSION}"
